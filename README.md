@@ -143,4 +143,4 @@ $$10 \cdot 10^6 \cdot 102 \space Кб = 1,02 \space Тб/день$$
 1. [How Chess.com Became The World's Top Chess App](https://www.buzzsprout.com/2432582/episodes/17541516-how-chess-com-became-the-world-s-top-chess-app) - данные о MAU, DAU и количестве игр
 2. [Chess.com Traffic Analytics](https://www.chess.com/article/view/chess-countries) - географическое распределение пользователей
 3. [Chess.com Statistics](https://www.chess.com/forum/view/help-support/how-much-data-does-one-chess-game-use) - дополнительная статистика платформы
-4. [Online Chess Platforms Comparison](https://www.chess.com/article/view/online-chess-platforms-comparison) - особенности функционирования платформ
+4. [Online Chess Platforms Comparison](https://www.chess.com/blog/OnlineChessTeacher/best-online-platforms-to-play-chess) - особенности функционирования платформ
