@@ -478,36 +478,28 @@ erDiagram
 
 - Физическая схема (с привязкой к БД, индексам, шардам)
 ```mermaid
-flowchart TB
-    subgraph Postgres
-      U1
-      U2
-      R1
-      G1
-      GU1
+flowchart LR
+    subgraph "Базы данных"
+        pg[PostgreSQL]
+        scylla[ScyllaDB]
+        redis[Redis]
     end
-
-    subgraph Cassandra
-      M
-      C
+    
+    subgraph "Бэкап стратегия"
+        pg -->|WAL streaming| pg_backup[PG Backups]
+        scylla -->|SSTable snapshots| scylla_backup[Scylla Backups]
+        redis -->|RDB+AOF| redis_backup[Redis Backups]
     end
-
-    subgraph Redis
-      S
-      MM
+    
+    subgraph "Хранилище"
+        backup_storage[S3 Compatible]
+        monitoring[Backup Monitoring]
     end
-
-    subgraph S3
-      A
-    end
-
-    U1-- user_id -->R1
-    U1-- user_id -->G1
-    G1-- game_id -->M
-    G1-- game_id -->C
-    U1-- user_id -->S
-    U1-- user_id -->A
-    G1-- user_id -->GU1
+    
+    pg_backup --> backup_storage
+    scylla_backup --> backup_storage
+    redis_backup --> backup_storage
+    backup_storage --> monitoring
 ```
 
 - Примерные размеры/нагрузки (итоги)
