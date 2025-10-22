@@ -285,4 +285,4 @@ erDiagram
 3. [Chess.com Statistics](https://www.chess.com/forum/view/help-support/how-much-data-does-one-chess-game-use) - дополнительная статистика платформы
 4. [Online Chess Platforms Comparison](https://www.chess.com/blog/OnlineChessTeacher/best-online-platforms-to-play-chess) - особенности функционирования платформ
 5. [Шахматы так популярны, что сервера Chess.com не справляются!](https://www.chess.com/ru/article/view/shakhmaty-tak-populiarny-chto-servera-chess-com-ne-spravliaiutsia) - официальная статься о нагрузке
-6. [Количество ходов в срдней партии в шахматы](https://ru.wikipedia.org/wiki/Число_Шеннона)
+6. [Количество ходов в средней партии в шахматы](https://ru.wikipedia.org/wiki/Число_Шеннона)
