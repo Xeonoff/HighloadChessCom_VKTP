@@ -274,7 +274,7 @@ flowchart LR
 
 - Список основных таблиц/хранилищ и нагрузки
   - users: профиль пользователя.
-    - Поля: user_id, username, country_code, created_at, avatar_ref, preferences.
+    - Поля: user_id, username, country_code, created_at, avatar_ref, preferences, status.
     - Размер: ~2 KB метаданные; аватар как файл отдельно (см. ниже).
     - QPS: R 1k–5k регионально, W 0.1k (регистрация/правки).
     - Консистентность: Strong для уникальности username и ссылок.
@@ -336,7 +336,9 @@ erDiagram
         datetime created_at
         varchar avatar_ref
         jsonb preferences
+        varchar status
     }
+    
     user_ratings {
         bigint user_id PK, FK
         varchar mode PK
@@ -344,6 +346,7 @@ erDiagram
         int deviation
         datetime updated_at
     }
+    
     games {
         bigint game_id PK
         bigint white_id FK
@@ -353,7 +356,25 @@ erDiagram
         datetime finished_at
         varchar result
         json summary
+        varchar status
     }
+    
+    active_games {
+        bigint game_id PK, FK
+        varchar server_id
+        datetime last_activity
+        json game_state
+    }
+    
+    matchmaking_entries {
+        bigint user_id PK, FK
+        varchar mode
+        int rating_range
+        varchar region
+        datetime joined_at
+        datetime expires_at
+    }
+    
     moves {
         bigint game_id PK, FK
         int seq PK
@@ -361,6 +382,7 @@ erDiagram
         datetime ts
         json meta
     }
+    
     game_chat_messages {
         bigint game_id FK
         uuid msg_id PK
@@ -368,6 +390,7 @@ erDiagram
         varchar text
         datetime ts
     }
+    
     user_sessions {
         uuid session_id PK
         bigint user_id FK
@@ -375,11 +398,7 @@ erDiagram
         varchar device
         varchar refresh_token_hash
     }
-    matchmaking_queue {
-        varchar bucket_key PK
-        json entries
-        datetime updated_at
-    }
+    
     avatar_files {
         bigint user_id PK, FK
         varchar avatar_url
@@ -387,6 +406,7 @@ erDiagram
         int size
         datetime updated_at
     }
+    
     analysis_jobs {
         uuid job_id PK
         bigint game_id FK
@@ -396,13 +416,19 @@ erDiagram
     }
 
     users ||--o{ user_ratings : has
-    users ||--o{ games : plays
-    games ||--o{ moves : contains
-    games ||--o{ game_chat_messages : has
+    users ||--o{ games : "plays as white"
+    users ||--o{ games : "plays as black"
+    users ||--o{ matchmaking_entries : "seeks in"
     users ||--o{ game_chat_messages : writes
     users ||--o{ user_sessions : has
     users ||--o| avatar_files : has
+    
+    games ||--o{ moves : contains
+    games ||--o{ game_chat_messages : has
     games ||--o{ analysis_jobs : produces
+    games ||--o| active_games : "currently active"
+    
+    matchmaking_entries }o--|| users : "belongs to"
 ```
 
 - Особенности распределения нагрузки по ключам
