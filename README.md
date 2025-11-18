@@ -175,7 +175,7 @@ $$10 \cdot 10^6 \cdot 102 \space Кб = 1,02 \space Тб/день$$
     - NA: ≈ 520 RPS, EU: ≈ 625 RPS, AS: ≈ 729 RPS, SA: ≈ 104 RPS, OC: ≈ 104 RPS
   - Трафик чата (3472 RPS пик): NA ≈ 868, EU ≈ 1042, AS ≈ 1215, SA ≈ 174, OC ≈ 174
 
-- Схема DNS балансировки
+- Схема DNS балансировки //TODO: переделать под свою балансировку
   - GeoDNS c latency-based и геополитиками:
     - Поставщики: Route53/NS1/Cloudflare DNS.
     - Записи: A/AAAA для edge VIP-адресов в каждом регионе.
@@ -220,7 +220,7 @@ flowchart LR
 ```
 
 ## 4. Локальная балансировка нагрузки
-- Многоуровневая схема в каждом ДЦ
+- Многоуровневая схема в каждом ДЦ //TODO: Слишком много уровней. Посмотреть что можно объединить
   - Уровень 0: CDN/WAF/Rate Limit (Cloudflare/Akamai) — TLS DoS защита, кеш статики/аватаров, базовый бот-фильтр.
   - Уровень 1: L4 Anycast VIP/GW (Envoy/HAProxy/NLB) — TCP/UDP termination, проксирование на L7 кластера; поддержка WebSocket pass-through и PROXY protocol.
   - Уровень 2: L7 шлюз (NGINX/Envoy Ingress) — SSL termination, HTTP routing, канареечные релизы, mTLS к сервисам.
@@ -237,7 +237,7 @@ flowchart LR
     - L4 GW: 2+ в каждой зоне, общий пул с fail-open на соседнюю зону.
     - L7 Ingress: 3+ реплики на зону для равномерной нагрузки и rolling updates.
 
-- Расчет количества балансировщиков
+- Расчет количества балансировщиков //TODO: избыточное кол-во балансеров; Резервирование
   - Ограничители: SSL termination (CPS), пропускная способность, количество одновременных соединений.
   - Входные ориентиры (по материалам NGINX):
     - HTTPS CPS (TLS handshakes) на современном x86 может достигать 10k–20k CPS на инстанс при оптимизации. Для API у нас ~2k RPS, средняя доля новых соединений обычно 5–20% благодаря keep-alive/HTTP2. Возьмем 20% на пике: 0.2 × 2 082 ≈ 416 CPS.
@@ -466,7 +466,7 @@ erDiagram
     - users, user_ratings: hash-шардинг по user_id на 8–16 шардов/регион, репликация 1 primary + 2 replicas (sync для близкой AZ, async для удаленной AZ).
     - games: hash по game_id, 8–16 шардов; доп. материализованный индекс games_by_user шардинг по user_id.
     - Резервирование: Patroni/pg_auto_failover; RPO≈0 (sync AZ), RTO<30–60s.
-  - Cassandra/ScyllaDB:
+  - Cassandra:
     - Ключ партиции: game_id, RF=3 на 3 AZ, LWT не используется в горячем пути.
     - Размер партиции — до ~2–4 KB/игру (ок), контроль через компакции; guard на seq.
     - Балансировка: случайные токены, rebalancing при росте.
@@ -479,7 +479,7 @@ erDiagram
 
 - Клиентские библиотеки и интеграции
   - Postgres: драйверы + PgBouncer (transaction pooling) на каждый шард, HAProxy/Envoy как TCP LB к пулам.
-  - Cassandra/Scylla: официальные драйверы с load balancing policy (DCAwareRoundRobin), retry/backoff.
+  - Cassandra: официальные драйверы с load balancing policy (DCAwareRoundRobin), retry/backoff.
   - Redis: cluster-aware клиенты (lettuce, jedis, node-redis), sharding transparent.
   - S3: SDK с multipart upload, S3 Transfer Acceleration; CDN origin pull.
   - Kafka (для событий ходов/чата/игр в аналитику): продьюсеры с acks=1 в горячем пути.
@@ -493,7 +493,7 @@ erDiagram
 - Схема резервного копирования
   - Postgres:
     - Ежедневный full basebackup + непрерывная архивация WAL (PITR). Хранение в объектном хранилище 30–90 дней. Тесты восстановления еженедельно.
-  - Cassandra/Scylla:
+  - Cassandra:
     - Нодовые снапшоты (SSTable) каждые 4–6 часов в S3, incremental backups включены. Проверки восстановления в стендбай-кластере ежемесячно.
   - Redis:
     - RDB каждые 5–15 минут + AOF everysec. Для сессий допускается потеря нескольких минут (RPO ~ 5 мин).
@@ -537,6 +537,8 @@ flowchart LR
   - sessions: 5–10k RPS чтение, 2–3k RPS запись.
   - matchmaking: 5–20k R/W на кластере, чувствителен к латентности.
 
+TODO: Алгоритмы балансировки игр
+TODO: Алгоритмы резервирования
 ## Источники
 1. [How Chess.com Became The World's Top Chess App](https://www.buzzsprout.com/2432582/episodes/17541516-how-chess-com-became-the-world-s-top-chess-app) - данные о MAU, DAU и количестве игр
 2. [Chess.com Traffic Analytics](https://www.chess.com/article/view/chess-countries) - географическое распределение пользователей
