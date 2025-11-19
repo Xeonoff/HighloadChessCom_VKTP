@@ -570,32 +570,32 @@ graph TD
     %% СУБД
     subgraph PG["PostgreSQL (OLTP, hash-шардинг)"]
         subgraph PG_USERS["Шарды по user_id (8–16 шардов)"]
-            users[users\nPK(user_id)\nUQ(username)\nIDX(country_code)\n+ rating_snapshot]
-            user_ratings[user_ratings\nPK(user_id, mode)\nIDX(updated_at)]
-            avatars_meta[avatar_files\nPK(user_id)\nIDX(updated_at)]
-            mm_entries[matchmaking_entries\nPK(user_id)\nIDX(region, mode, rating_range, joined_at)]
-            games_by_user[games_by_user (denorm)\nPK(user_id, started_at desc, game_id)]
+            users[users<br/>PK: user_id<br/>UQ: username<br/>IDX: country_code<br/>+ rating_snapshot]
+            user_ratings[user_ratings<br/>PK: user_id, mode<br/>IDX: updated_at]
+            avatars_meta[avatar_files<br/>PK: user_id<br/>IDX: updated_at]
+            mm_entries[matchmaking_entries<br/>PK: user_id<br/>IDX: region, mode, rating_range, joined_at]
+            games_by_user[games_by_user (denorm)<br/>PK: user_id, started_at desc, game_id]
         end
 
         subgraph PG_GAMES["Шарды по game_id (8–16 шардов)"]
-            games[games\nPK(game_id)\nIDX(white_id)\nIDX(black_id)\n+ message_count]
-            active_games[active_games\nPK(game_id)\nIDX(server_id)\nIDX(last_activity)]
-            analysis_jobs[analysis_jobs\nPK(job_id)\nIDX(game_id)\nIDX(status, created_at)]
+            games[games<br/>PK: game_id<br/>IDX: white_id<br/>IDX: black_id<br/>+ message_count]
+            active_games[active_games<br/>PK: game_id<br/>IDX: server_id<br/>IDX: last_activity]
+            analysis_jobs[analysis_jobs<br/>PK: job_id<br/>IDX: game_id<br/>IDX: status, created_at]
         end
     end
 
-    subgraph CASS["Cassandra \nRF=3, LOCAL_QUORUM"]
-        moves[moves\nPRIMARY KEY ((game_id), seq)]
-        chat[game_chat_messages\nPRIMARY KEY ((game_id), ts, msg_id)]
+    subgraph CASS["Cassandra<br/>RF=3, LOCAL_QUORUM"]
+        moves[moves<br/>PRIMARY KEY: (game_id), seq]
+        chat[game_chat_messages<br/>PRIMARY KEY: (game_id), ts, msg_id]
     end
 
-    subgraph REDIS["Redis Cluster\n6–12 шардов, master+replica"]
-        sessions[user_sessions (keys)\nsession:{session_id}\nuser:{user_id}:sessions]
-        mm_queue[matchmaking_queue (keys)\nmm:{region}:{mode}:{bucket} -> zset/stream]
+    subgraph REDIS["Redis Cluster<br/>6–12 шардов, master+replica"]
+        sessions[user_sessions (keys)<br/>session:{session_id}<br/>user:{user_id}:sessions]
+        mm_queue[matchmaking_queue (keys)<br/>mm:{region}:{mode}:{bucket} → zset/stream]
     end
 
     subgraph S3["S3-compatible Object Storage + CDN"]
-        avatars[avatar image files\navatars/{user_id}.jpg]
+        avatars[avatar image files<br/>avatars/{user_id}.jpg]
     end
 
     %% Связи логики
