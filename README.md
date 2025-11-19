@@ -9,6 +9,7 @@
 * [**4. Локальная балансировка нагрузки**](#4-локальная-балансировка-нагрузки)
 * [**5. Логическая схема БД**](#5-логическая-схема-бд)
 * [**6. Физическая схема БД**](#6-физическая-схема-бд)
+* [**7. Алгоритмы**](#7-алгоритмы)
 
 ## 1. Тема, аудитория, функционал
 
@@ -176,98 +177,159 @@ $$10 \cdot 10^6 \cdot 102 \space Кб = 1,02 \space Тб/день$$
   - Трафик чата (3472 RPS пик): NA ≈ 868, EU ≈ 1042, AS ≈ 1215, SA ≈ 174, OC ≈ 174
 
 - Схема DNS балансировки //TODO: переделать под свою балансировку
-  - GeoDNS c latency-based и геополитиками:
-    - Поставщики: Route53/NS1/Cloudflare DNS.
-    - Записи: A/AAAA для edge VIP-адресов в каждом регионе.
-    - Политики: geolocation/latency routing + health-check failover. TTL: 30–60s для возможности быстрого steering, при этом используем DNS resolvers с ECS (EDNS Client Subnet) для точного гео.
-    - Weighted routing: для плавного перераспределения трафика между соседними ДЦ (например, AS: 70% SG / 30% BOM в часы пик у Индии).
-  - Split-horizon: отдельные зоны для приватного трафика служебных кластеров.
+  - GeoDNS «как сервис» не используем. Вместо этого — единый Anycast‑адрес + собственный глобальный балансировщик (GSLB), который сам решает, в какой ДЦ отправить нового пользователя:
+    - У клиента в DNS прописан один домен, который всегда резолвится в Anycast IP (`edge.chess.com`).
+    - Этот Anycast IP анонсируется из всех региональных PoP/ДЦ.
+    - На Anycast‑edge во всех регионах крутится наш глобальный балансировщик (GSLB):
+      - Получает первый HTTP(S)/WebSocket‑запрос от клиента.
+      - Измеряет реальный RTT до клиента, а не доверяет гео‑БД.
+      - Учитывает:
+        - `SLI` по регионам: p95 latency, error rate, saturation (CPU, mem, количество активных игр).
+        - `Политику локальности`: матчмейкер старается матчить внутри региона.
+        - `Политику резервирования`: какие регионы сейчас в degraded/maintenance.
+    - Возвращает клиенту региональный токен (например, в JWT `region=eu-central`), а дальше все запросы идут уже в этот регион (region‑sticky).
+- Схема:
+  ```mermaid
+  flowchart LR
+      client((Client)) -->|DNS: edge.chess.com -> Anycast IP| anycast[Global Anycast Edge]
 
-- Схема Anycast балансировки
-  - Anycast IP для edge L4 VIP:
-    - BGP-анонс от PoP/edge в каждом регионе (через провайдеров/Cloudflare/Akamai).
-    - Трафик по кратчайшему AS-пути локально попадает в ближайший регион.
-    - Health steering: withdraw/AS-path prepending при деградации конкретного региона.
-  - Применение: WebSocket/L4, TURN/STUN при p2p-фичах, TCP API с требованием минимального RTT.
+      subgraph GSLB["Глобальный балансировщик (во всех PoP)"]
+        anycast --> gslb_core{"Алгоритм выбора региона"}
+        gslb_core -->|issue region token| client
+      end
 
-- Механизм регулировки трафика между ДЦ
-  - Управление долями через:
-    - Weighted GeoDNS (перекладка в процентах).
-    - BGP prepending/med для Anycast VIP – «удаляем» регион при деградации.
-    - GSLB-контроллер: собирает SLI/SLO (p95 latency, error rate, saturation), публикует политики в DNS/BGP.
-  - Cross-DC spillover для игровых сессий:
-    - Разрешено только при перегрузке и с предупреждением UX (возможен рост RTT). Предпочтение — матчить локальные пары, иначе fallback в соседний ДЦ (EU<->UK, SG<->SYD, BOM<->SG, VA<->OH).
-  - Sticky locality:
-    - Игровые сессии pin’ятся к ДЦ, где стартовал матч; миграция в ходе партии запрещена, кроме аварийного drain с state handover через Kafka/DB.
+      gslb_core --> regNA[DC us-east]
+      gslb_core --> regEU[DC eu-central]
+      gslb_core --> regAS[DC ap-south]
+      gslb_core --> regSA[DC sa-east]
+      gslb_core --> regOC[DC ap-southeast]
 
-```mermaid
-flowchart LR
-    client((Client)) -->|DNS Query| dns
-    dns -->|A/AAAA Anycast VIP| edge
-    edge -->|L4/L7| regNA
-    edge -->|L4/L7| regEU
-    edge -->|L4/L7| regAS
-    edge -->|L4/L7| regSA
-    edge -->|L4/L7| regOC
+      client -->|последующие запросы с region-token| regEU
+  ```
+- Алгоритм выбора региона
+  - Собираем кандидатов:
+   - Список всех регионов, где есть Game Plane.
+   - Фильтруем по `status != down` (полный outage) и `status != drained` (выводим из работы).
 
-    subgraph "GSLB Control"
-    hc
-    pol
-    hc --> pol
-    pol --> dns
-    pol --> edge
-    end
-```
+  - Оцениваем расстояние/RTT:
+    - При первом запросе:
+      - Быстрый пассивный RTT (TCP handshake, TLS handshake time).
+      - Возможно, короткий active ping до каждого региона (через существующий канал edge↔DC).
+    - Формируем метрику `network_score(region)`.
+
+  - Учитываем загрузку и SLO:
+    - `load_score(region)` — нормируем по:
+      - кол-ву активных WS‑соединений,
+      - CPU/heap на game‑серверы,
+      - текущему коэффициенту резервирования (см. алгоритм резервирования).
+    -  `health_penalty(region)` — штраф за ошибки/деградации.
+
+  - Считаем итоговый score:
+    - Например:
+     - `score = w_rtt * network_score + w_load * load_score + w_health * health_penalty`
+    - `w_rtt` выше для Game Plane (игры), ниже для Control Plane (API).
+
+  - Применяем policy локальности:
+    - Если пользователь уже имеет активную сессию/игру в регионе R, то жестко пинним к R, даже если другой регион дает лучший `score`.
+    - Для матчмейкинга стараемся матчить игроков из одного региона. Если не получилось за N секунд — расширяем пул (например EU+UK → EU+UK+MENA).
+
+  - Выбираем регион с минимальным score и отдаем клиенту токен `region`.
+
+  - Этот алгоритм живет внутри нашего GSLB и может опираться не только на гео‑информацию, но и на реальные метрики сети + загрузки.
+
+  - Регулировка трафика между ДЦ
+    - Параметры политики на регион:
+      - `target_utilization` (например, 60%).
+      - `max_new_sessions_per_sec`.
+      - `spillover_to` — список регионов для перелива (EU↔UK, BOM↔SG, SG↔SYD, VA↔OH).
+    - При превышении `target_utilization` в регионе:
+      - GSLB ограничивает `new_sessions` и начинает переливать только новых пользователей в соседние регионы (с уведомлением в UI).
+      - Уже активные сессии остаются pinned к исходному региону.
 
 ## 4. Локальная балансировка нагрузки
 - Многоуровневая схема в каждом ДЦ //TODO: Слишком много уровней. Посмотреть что можно объединить
-  - Уровень 0: CDN/WAF/Rate Limit (Cloudflare/Akamai) — TLS DoS защита, кеш статики/аватаров, базовый бот-фильтр.
-  - Уровень 1: L4 Anycast VIP/GW (Envoy/HAProxy/NLB) — TCP/UDP termination, проксирование на L7 кластера; поддержка WebSocket pass-through и PROXY protocol.
-  - Уровень 2: L7 шлюз (NGINX/Envoy Ingress) — SSL termination, HTTP routing, канареечные релизы, mTLS к сервисам.
-  - Уровень 3: Сервис-меш (Istio/Linkerd) — per-request retry/breakers, наблюдаемость, авторизация.
-  - Уровень 4: Внутрикластерный баланс (kube-proxy/IPVS + подовые sidecars) — распределение по репликам.
-  - Специализированный путь для игры:
-    - WebSocket Gateway с sticky session по ключам: game_id, session_id, или consistent-hash по user_id для равномерности.
-    - State host pin: все ивенты одной игры на один game-server shard.
+  Сливаем уровни, чтобы не плодить балансировщики:
+  - Уровень 0: CDN/WAF/Rate Limit  
+    - Защита от DoS, кеш статики/аватаров, базовая фильтрация ботов.
+  - Уровень 1: Unified Edge Gateway (L4+L7)  
+    - NGINX:
+      - TLS termination.
+      - HTTP routing (API) и WebSocket‑proxy (игры/чат).
+      - Rate limiting per IP/user/endpoint.
+      - A/B/канареечные релизы.
+      - mTLS к внутренним сервисам (опционально).
+    - Здесь же выполняем L4‑функции (accept TCP, PROXY protocol) и L7 (path/host routing).
+  - Уровень 2: Кластер приложений (Kubernetes/VM)
+    - Внутренний баланс: kube‑proxy/IPVS или сервис‑дискавери + клиентский round‑robin.
+    - Без отдельного сервис‑меша — его функции (ретраи, таймауты, метрики) реализованы в Edge Gateway и SDK.
 
+- Специальный путь для игры:
+  - WebSocket‑подключения приходят через Unified Edge Gateway.
+  - Sticky‑маршрутизация:
+    - При установлении WS Edge выбирает game‑сервер по `consistent-hash(user_id)` или `game_id`.
+    - Маркирует соединение (в cookie/заголовке) идентификатором shard.
+    - Все запросы по этой игре/сессии роутятся на один и тот же pod/инстанс.
+  ```mermaid
+  flowchart LR
+      CDN[CDN/WAF] --> EDGE[Unified Edge Gateway (L4+L7)]
+      EDGE --> API[API Services (Auth, Profiles, Ratings, Matchmaking)]
+      EDGE --> GAME[Game Server Pods (WS)]
+      EDGE --> CHAT[Chat Service]
+      EDGE --> ANALYTICS[Analysis/Workers]
+
+      subgraph Cluster["Kubernetes / VM Cluster"]
+        API
+        GAME
+        CHAT
+        ANALYTICS
+      end
+  ```
 - Механизмы резервирования
-  - Формула емкости на отказ: N активных узлов с резервом по схеме N+1 или N*2/(N+1) эффективной емкости.
-    - Пример: требуется 1 000 000 одновременных WebSocket. Если одна нода держит безопасно 50 000 WS, N=20 дает 1 000 000 при 0% резерва. С учетом резерва по формуле (N*2)/(N+1) ≈ (20*2)/21 ≈ 1.9 эквивалента N, значит планируем 24–26 узлов, чтобы выдержать выход 2–3 узлов без потери цели.
-  - Active-Active балансировщики на каждом уровне (минимум 2 AZ):
-    - L4 GW: 2+ в каждой зоне, общий пул с fail-open на соседнюю зону.
-    - L7 Ingress: 3+ реплики на зону для равномерной нагрузки и rolling updates.
+  - Задача: при выходе из строя до `f` узлов кластер должен выдерживать пиковую нагрузку без превышения целевой утилизации `U_max` (например, 60%).
 
-- Расчет количества балансировщиков //TODO: избыточное кол-во балансеров; Резервирование
-  - Ограничители: SSL termination (CPS), пропускная способность, количество одновременных соединений.
-  - Входные ориентиры (по материалам NGINX):
-    - HTTPS CPS (TLS handshakes) на современном x86 может достигать 10k–20k CPS на инстанс при оптимизации. Для API у нас ~2k RPS, средняя доля новых соединений обычно 5–20% благодаря keep-alive/HTTP2. Возьмем 20% на пике: 0.2 × 2 082 ≈ 416 CPS.
-    - Итог по API: достаточно 2 инстансов L7 (по 416 CPS каждый) для покрытия, берем 4–6 на ДЦ с резервом и для DDoS/бурстов.
-  - WebSocket:
-    - Конкурентные соединения: пиковый онлайн 1 000 000 глобально, в ДЦ по долям (из п.3): NA ~250k, EU ~300k, AS ~350k, SA ~50k, OC ~50k.
-    - Емкость L4/L7 узла: консервативно 50k WS/узел (ядро Linux epoll/tuning, 64GB RAM, NIC 25–50GbE). 
-    - Требуемые узлы L4/L7 WebSocket GW:
-      - NA: 250k / 50k = 5 узлов. С резервом N+1 и по формуле N*2/(N+1) планируем 8–10 узлов.
-      - EU: 300k / 50k = 6 → план 9–11.
-      - AS: 350k / 50k = 7 → план 10–12.
-      - SA: 50k / 50k = 1 → план 3–4.
-      - OC: 50k / 50k = 1 → план 3–4.
-    - Пропускная способность: ход/чат — малые сообщения (сотни байт). Даже при 74k RPS ходов и скажем 1 KB/ход общая полоса < 600 Mbit/s/регион, что далеко ниже 25GbE. Критичнее — количество соединений и контекстные переключения.
-  - Вывод:
-    - L7 API Ingress: 4–6 инстансов на ДЦ.
-    - L4/L7 WebSocket GW: 8–12 инстансов на крупные ДЦ (NA/EU/AS), 3–4 на малые (SA/OC).
+  - Обозначения:
+    - `L_peak` — требуемая пиковая нагрузка (например, 250k одновременных WS в регионе).
+    - `C_node` — максимальная емкость одного узла по WS (например, 50k соединений).
+    - `U_max` — желаемая максимальная утилизация при отказах (0.6–0.7).
+    - `f` — максимальное число одновременно отказавших узлов, от которого хотим защититься.
+  - Условие надежности кластера:
 
-```mermaid
-flowchart LR
-    CDN --> L4GW
-    L4GW --> L7API
-    L4GW --> L7WS
-    L7API --> Mesh
-    L7WS --> Mesh
-    Mesh --> SVC1
-    Mesh --> SVC2
-    Mesh --> SVC3
-    Mesh --> SVC4
-```
+  - После отказа `f` узлов:
+    (n - f) * C_node * U_max >= L_peak
+    => минимальное `n`:
+    n >= f + ceil(L_peak / (C_node * U_max))
+
+
+  - Пример: WebSocket‑кластеры
+
+    - Регион EU: `L_peak = 300k WS`
+    - `C_node = 50k WS`
+    - `U_max = 0.7` (70%)
+    - `f = 2` (хотим пережить отказ двух нод без деградации)
+
+    - Считаем:
+    L_peak / (C_node * U_max) = 300k / (50k * 0.7) ≈ 8.57
+    ceil(...) = 9
+    n >= f + 9 = 2 + 9 = 11
+    - Планируем 11 game‑нод под WebSocket в регионе EU.  
+    - Проверка:
+      после отказа 2 нод: (11 - 2) * 50k * 0.7 = 9 * 50k * 0.7 = 315k >= 300k
+
+
+  - Аналогично считаем:
+    - Для NA (250k WS), AS (350k WS), SA/OC (50k WS) — получаем обычно 5–12 нод в крупных регионах и 3–4 ноды в мелких, но уже обоснованные `k-out-of-n`.
+
+- Резервирование Edge Gateway
+
+  - Edge‑узлы обычно утыкаются не в WS‑емкость, а в:
+    - TLS‑CPS (handshakes/s),
+    - пропускную способность сети,
+    - количество открытых файлов/сокетов.
+
+  - Расчет аналогичный, но по CPS и Gbit/s.  
+  - При наших цифрах API (~2k RPS, 400+ CPS) достаточно:
+    - 2 узла для покрытия нагрузки,
+    - с `f = 1`, `U_max = 0.6` получаем `n >= 1 + ceil(Load / (Cap*U))` → обычно 3–4 узла Edge/регион.
 
 ## 5. Логическая схема БД
 - Требования к формату: без привязки к конкретным СУБД и шардингу, все данные (включая «файловые»), кеши и буферы, размеры, QPS, консистентность, распределение по ключам.
@@ -505,27 +567,43 @@ erDiagram
 - Физическая схема (с привязкой к БД, индексам, шардам)
 ```mermaid
 flowchart LR
-    subgraph "Базы данных"
-        pg[PostgreSQL]
-        scylla[ScyllaDB]
-        redis[Redis]
+    subgraph PG["PostgreSQL (шардинг по user_id/game_id)"]
+        users[(users)]
+        ratings[(user_ratings)]
+        games[(games)]
+        active[(active_games)]
+        mm_entries[(matchmaking_entries)]
+        jobs[(analysis_jobs)]
+        avatars_meta[(avatar_files)]
     end
-    
-    subgraph "Бэкап стратегия"
-        pg -->|WAL streaming| pg_backup[PG Backups]
-        scylla -->|SSTable snapshots| scylla_backup[Scylla Backups]
-        redis -->|RDB+AOF| redis_backup[Redis Backups]
+
+    subgraph SCY["ScyllaDB / Cassandra"]
+        moves[(moves)]
+        chat[(game_chat_messages)]
     end
-    
-    subgraph "Хранилище"
-        backup_storage[S3 Compatible]
-        monitoring[Backup Monitoring]
+
+    subgraph REDIS["Redis Cluster"]
+        sessions[(user_sessions keys)]
+        mm_queue[(matchmaking_queue keys)]
     end
-    
-    pg_backup --> backup_storage
-    scylla_backup --> backup_storage
-    redis_backup --> backup_storage
-    backup_storage --> monitoring
+
+    subgraph S3["Object Storage + CDN"]
+        avatars[(avatar image files)]
+    end
+
+    users --> ratings
+    users --> games
+    users --> mm_entries
+    users --> sessions
+    users --> avatars_meta
+    avatars_meta --> avatars
+
+    games --> moves
+    games --> chat
+    games --> active
+    games --> jobs
+
+    mm_entries --> mm_queue
 ```
 
 - Примерные размеры/нагрузки (итоги)
@@ -537,6 +615,7 @@ flowchart LR
   - sessions: 5–10k RPS чтение, 2–3k RPS запись.
   - matchmaking: 5–20k R/W на кластере, чувствителен к латентности.
 
+## 7. Алгоритмы
 TODO: Алгоритмы балансировки игр
 TODO: Алгоритмы резервирования
 ## Источники
