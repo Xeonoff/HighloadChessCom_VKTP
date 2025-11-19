@@ -271,18 +271,18 @@ $$10 \cdot 10^6 \cdot 102 \space Кб = 1,02 \space Тб/день$$
     - Все запросы по этой игре/сессии роутятся на один и тот же pod/инстанс.
   ```mermaid
   flowchart LR
-      CDN[CDN/WAF] --> EDGE[Unified Edge Gateway (L4+L7)]
-      EDGE --> API[API Services (Auth, Profiles, Ratings, Matchmaking)]
-      EDGE --> GAME[Game Server Pods (WS)]
-      EDGE --> CHAT[Chat Service]
-      EDGE --> ANALYTICS[Analysis/Workers]
+    CDN["CDN/WAF"] --> EDGE["Unified Edge Gateway (L4+L7)"]
+    EDGE --> API["API Services (Auth, Profiles, Ratings, Matchmaking)"]
+    EDGE --> GAME["Game Server Pods (WS)"]
+    EDGE --> CHAT["Chat Service"]
+    EDGE --> ANALYTICS["Analysis/Workers"]
 
-      subgraph Cluster["Kubernetes / VM Cluster"]
-        API
-        GAME
-        CHAT
-        ANALYTICS
-      end
+    subgraph Cluster["Kubernetes / VM Cluster"]
+      API
+      GAME
+      CHAT
+      ANALYTICS
+    end
   ```
 - Механизмы резервирования
   - Задача: при выходе из строя до `f` узлов кластер должен выдерживать пиковую нагрузку без превышения целевой утилизации `U_max` (например, 60%).
