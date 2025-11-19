@@ -503,7 +503,7 @@ erDiagram
 
 - Выбор СУБД и обоснование (потаблично)
   - users, user_ratings, games: PostgreSQL (реляционные связи, транзакции, строгая консистентность, богатые индексы).
-  - moves, game_chat_messages: Cassandra/ScyllaDB (широкие строки по game_id, высокая скорость записи, линейное масштабирование, порядок по seq).
+  - moves, game_chat_messages: Cassandra (широкие строки по game_id, высокая скорость записи, линейное масштабирование, порядок по seq).
   - user_sessions, matchmaking_queue: Redis Cluster (низкая задержка, TTL, структуры данных lists/sets/zsets; для очередей — streams).
   - avatar_files: объектное хранилище S3-совместимое + CDN (метаданные в Postgres).
   - analysis_jobs: PostgreSQL или Kafka + компактное состояние в Postgres (в зависимости от пайплайна).
@@ -566,42 +566,52 @@ erDiagram
 
 - Физическая схема (с привязкой к БД, индексам, шардам)
 ```mermaid
-flowchart LR
-    subgraph PG["PostgreSQL (шардинг по user_id/game_id)"]
-        users[(users)]
-        ratings[(user_ratings)]
-        games[(games)]
-        active[(active_games)]
-        mm_entries[(matchmaking_entries)]
-        jobs[(analysis_jobs)]
-        avatars_meta[(avatar_files)]
+graph TD
+    %% СУБД
+    subgraph PG["PostgreSQL (OLTP, hash-шардинг)"]
+        subgraph PG_USERS["Шарды по user_id (8–16 шардов)"]
+            users[users\nPK(user_id)\nUQ(username)\nIDX(country_code)\n+ rating_snapshot]
+            user_ratings[user_ratings\nPK(user_id, mode)\nIDX(updated_at)]
+            avatars_meta[avatar_files\nPK(user_id)\nIDX(updated_at)]
+            mm_entries[matchmaking_entries\nPK(user_id)\nIDX(region, mode, rating_range, joined_at)]
+            games_by_user[games_by_user (denorm)\nPK(user_id, started_at desc, game_id)]
+        end
+
+        subgraph PG_GAMES["Шарды по game_id (8–16 шардов)"]
+            games[games\nPK(game_id)\nIDX(white_id)\nIDX(black_id)\n+ message_count]
+            active_games[active_games\nPK(game_id)\nIDX(server_id)\nIDX(last_activity)]
+            analysis_jobs[analysis_jobs\nPK(job_id)\nIDX(game_id)\nIDX(status, created_at)]
+        end
     end
 
-    subgraph SCY["ScyllaDB / Cassandra"]
-        moves[(moves)]
-        chat[(game_chat_messages)]
+    subgraph CASS["Cassandra \nRF=3, LOCAL_QUORUM"]
+        moves[moves\nPRIMARY KEY ((game_id), seq)]
+        chat[game_chat_messages\nPRIMARY KEY ((game_id), ts, msg_id)]
     end
 
-    subgraph REDIS["Redis Cluster"]
-        sessions[(user_sessions keys)]
-        mm_queue[(matchmaking_queue keys)]
+    subgraph REDIS["Redis Cluster\n6–12 шардов, master+replica"]
+        sessions[user_sessions (keys)\nsession:{session_id}\nuser:{user_id}:sessions]
+        mm_queue[matchmaking_queue (keys)\nmm:{region}:{mode}:{bucket} -> zset/stream]
     end
 
-    subgraph S3["Object Storage + CDN"]
-        avatars[(avatar image files)]
+    subgraph S3["S3-compatible Object Storage + CDN"]
+        avatars[avatar image files\navatars/{user_id}.jpg]
     end
 
-    users --> ratings
-    users --> games
-    users --> mm_entries
-    users --> sessions
+    %% Связи логики
+    users --> user_ratings
     users --> avatars_meta
+    users --> mm_entries
+    users --> games_by_user
+    users --> sessions
+
     avatars_meta --> avatars
 
     games --> moves
     games --> chat
-    games --> active
-    games --> jobs
+    games --> active_games
+    games --> analysis_jobs
+    games --> games_by_user
 
     mm_entries --> mm_queue
 ```
