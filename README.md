@@ -540,9 +540,8 @@ erDiagram
   - users, user_ratings, games: PostgreSQL (реляционные связи, транзакции, строгая консистентность, богатые индексы).
   - moves, game_chat_messages: Cassandra (широкие строки по game_id, высокая скорость записи, линейное масштабирование, порядок по seq).
   - user_sessions, matchmaking_queue: Redis Cluster (низкая задержка, TTL, структуры данных lists/sets/zsets; для очередей — streams).
-  - avatar_files: объектное хранилище S3-совместимое + CDN (метаданные в Postgres).
+  - avatar_files: объектное хранилище Minio + CDN (метаданные в Postgres).
   - analysis_jobs: PostgreSQL или Kafka + компактное состояние в Postgres (в зависимости от пайплайна).
-  - Дополнительно для аналитики: ClickHouse/BigQuery для оффлайн-анализа партий и ходов.
 
 - Индексы и денормализация
   - users: PK(user_id), UNIQUE(username), IDX(country_code). Денормализация: cached_rating (by most-used mode), vanity stats для профиля.
@@ -578,7 +577,7 @@ erDiagram
   - Postgres: драйверы + PgBouncer (transaction pooling) на каждый шард, HAProxy/Envoy как TCP LB к пулам.
   - Cassandra: официальные драйверы с load balancing policy (DCAwareRoundRobin), retry/backoff.
   - Redis: cluster-aware клиенты (lettuce, jedis, node-redis), sharding transparent.
-  - S3: SDK с multipart upload, S3 Transfer Acceleration; CDN origin pull.
+  - Minio: SDK с multipart upload, S3 Transfer Acceleration; CDN origin pull.
   - Kafka (для событий ходов/чата/игр в аналитику): продьюсеры с acks=1 в горячем пути.
 
 - Балансировка запросов / мультиплексирование подключений
@@ -594,7 +593,7 @@ erDiagram
     - Нодовые снапшоты (SSTable) каждые 4–6 часов в S3, incremental backups включены. Проверки восстановления в стендбай-кластере ежемесячно.
   - Redis:
     - RDB каждые 5–15 минут + AOF everysec. Для сессий допускается потеря нескольких минут (RPO ~ 5 мин).
-  - S3/аватары:
+  - Minio:
     - Версионирование бакета, Lifecycle-политики, cross-region replication для DR.
   - Каталог бэкапов:
     - Метаданные бэкапов в отдельной базе (BackupsDB) для отслеживания RPO/RTO и автоматических DR-дрилей.
@@ -629,7 +628,7 @@ graph TD
         mm_queue[matchmaking_queue keys<br/>mm:region:mode:bucket → zset/stream]
     end
 
-    subgraph S3["S3-compatible Object Storage + CDN"]
+    subgraph S3["Minio + CDN"]
         avatars[avatar image files<br/>avatars/user_id.jpg]
     end
 
