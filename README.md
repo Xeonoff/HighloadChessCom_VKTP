@@ -237,14 +237,38 @@ $$10 \cdot 10^6 \cdot 102 \space Кб = 1,02 \space Тб/день$$
 
   - Этот алгоритм живет внутри нашего GSLB и может опираться не только на гео‑информацию, но и на реальные метрики сети + загрузки.
 
-  - Регулировка трафика между ДЦ
-    - Параметры политики на регион:
-      - `target_utilization` (например, 60%).
-      - `max_new_sessions_per_sec`.
-      - `spillover_to` — список регионов для перелива (EU↔UK, BOM↔SG, SG↔SYD, VA↔OH).
-    - При превышении `target_utilization` в регионе:
-      - GSLB ограничивает `new_sessions` и начинает переливать только новых пользователей в соседние регионы (с уведомлением в UI).
-      - Уже активные сессии остаются pinned к исходному региону.
+- Схема Anycast балансировки
+  - Anycast IP для edge L4 VIP:
+    - BGP-анонс от PoP/edge в каждом регионе (через провайдеров/Cloudflare/Akamai).
+    - Трафик по кратчайшему AS-пути локально попадает в ближайший регион.
+    - Health steering: withdraw/AS-path prepending при деградации конкретного региона.
+  - Применение: WebSocket/L4, TURN/STUN при p2p-фичах, TCP API с требованием минимального RTT.
+```mermaid
+flowchart LR
+    client((Client)) -->|DNS Query| dns
+    dns -->|A/AAAA Anycast VIP| edge
+    edge -->|L4/L7| regNA
+    edge -->|L4/L7| regEU
+    edge -->|L4/L7| regAS
+    edge -->|L4/L7| regSA
+    edge -->|L4/L7| regOC
+
+    subgraph "GSLB Control"
+    hc
+    pol
+    hc --> pol
+    pol --> dns
+    pol --> edge
+    end
+```
+- Регулировка трафика между ДЦ
+  - Параметры политики на регион:
+    - `target_utilization` (например, 60%).
+    - `max_new_sessions_per_sec`.
+    - `spillover_to` — список регионов для перелива (EU↔UK, BOM↔SG, SG↔SYD, VA↔OH).
+  - При превышении `target_utilization` в регионе:
+    - GSLB ограничивает `new_sessions` и начинает переливать только новых пользователей в соседние регионы (с уведомлением в UI).
+    - Уже активные сессии остаются pinned к исходному региону.
 
 ## 4. Локальная балансировка нагрузки
 - Многоуровневая схема в каждом ДЦ //TODO: Слишком много уровней. Посмотреть что можно объединить
